@@ -1,6 +1,6 @@
 /*
 
-Copyright (c) 2023, Dominic Szablewski - https://phoboslab.org
+Copyright (c) 2024, Dominic Szablewski - https://phoboslab.org
 SPDX-License-Identifier: MIT
 
 Command line tool to compress neuralink samples
