@@ -23,3 +23,5 @@ Compression is done by:
 4. encode the difference to the predicted difference using [rice coding](https://en.wikipedia.org/wiki/Golomb_coding#Rice_coding)
 5. estimate next `rice_k` based on bit length of this encode
 6. go to 2.
+
+The LMS sorta-kinda-works, but the added complexity is not worth this tiny increase in compression rate.
