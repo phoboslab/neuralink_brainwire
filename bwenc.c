@@ -176,6 +176,40 @@ short *wav_read(const char *path, samples_t *desc) {
 /* -----------------------------------------------------------------------------
 	BRAINWIRE reader / writer */
 
+#define LMS_LEN 16
+
+typedef struct {
+	float history[LMS_LEN];
+	float weights[LMS_LEN];
+} lms_t;
+
+lms_t lms_default = {.weights = {
+	 -2727.354492,  -2991.427246,  -2570.752197,  -2929.763672, 
+	 -3993.487793,  -3542.986572,  -7829.265625,  -5729.798828, 
+	 -8075.666992,  -9865.524414, -11893.199219, -14633.410156, 
+	-16042.058594, -19744.968750, -14998.083008, -12158.687500
+}};
+
+static inline int lms_predict(lms_t *lms) {
+	float prediction = 0;
+	for (int i = 0; i < LMS_LEN; i++) {
+		prediction += lms->weights[i] * lms->history[i];
+	}
+	return ceil(prediction * 0.0000075);
+}
+
+static inline void lms_update(lms_t *lms, int sample, int residual) {
+	float delta = (residual > 0) ? sqrt(residual) : -sqrt(-residual);
+	for (int i = 0; i < LMS_LEN; i++) {
+		lms->weights[i] += lms->history[i] * delta;
+	}
+
+	for (int i = 0; i < LMS_LEN-1; i++) {
+		lms->history[i] = lms->history[i+1];
+	}
+	lms->history[LMS_LEN-1] = sample;
+}
+
 static inline int rice_read(uint8_t *bytes, int *bit_pos, uint32_t k) {
 	int msbs = 0;
 	int p = *bit_pos;
@@ -273,6 +307,7 @@ short *brainwire_read(const char *path, samples_t *desc) {
 
 	int bit_pos = 0;
 	float rice_k = 3;
+	lms_t lms = lms_default;
 
 	int samples = rice_read(bytes, &bit_pos, 16);
 	int samplerate = rice_read(bytes, &bit_pos, 16);
@@ -282,13 +317,18 @@ short *brainwire_read(const char *path, samples_t *desc) {
 	for (int i = 0; i < samples; i++) {
 		int temp = bit_pos;
 
-		int residual = rice_read(bytes, &bit_pos, rice_k);
+		int encoded = rice_read(bytes, &bit_pos, rice_k);
+		int predicted_residual = lms_predict(&lms);
+		int residual = encoded + predicted_residual;
 		int quantized = prev_quantized + residual;
 		prev_quantized = quantized;
+
 		sample_data[i] = brainwire_dequant(quantized);
 
+		lms_update(&lms, residual, encoded);
+
 		int encoded_len = bit_pos - temp;
-		rice_k = rice_k * 0.99 + (encoded_len / 1.55) * 0.01;
+		rice_k = rice_k * 0.995 + (encoded_len / 1.525) * 0.005;
 	}
 
 	desc->channels = 1;
@@ -303,6 +343,7 @@ int brainwire_write(const char *path, short *sample_data, samples_t *desc) {
 
 	int bit_pos = 0;
 	float rice_k = 3;
+	lms_t lms = lms_default;
 
 	rice_write(bytes, &bit_pos, desc->samples, 16);
 	rice_write(bytes, &bit_pos, desc->samplerate, 16);
@@ -311,10 +352,15 @@ int brainwire_write(const char *path, short *sample_data, samples_t *desc) {
 	for (int i = 0; i < desc->samples; i++) {
 		int quantized = brainwire_quant(sample_data[i]);
 		int residual = quantized - prev_quantized;
-		prev_quantized = quantized;
+		int predicted_residual = lms_predict(&lms);
 
-		int encoded_len = rice_write(bytes, &bit_pos, residual, rice_k);
-		rice_k = rice_k * 0.99 + (encoded_len / 1.55) * 0.01;
+		int encoded = residual - predicted_residual;
+
+		lms_update(&lms, residual, encoded);
+
+		int encoded_len = rice_write(bytes, &bit_pos, encoded, rice_k);
+		rice_k = rice_k * 0.995 + (encoded_len / 1.525) * 0.005;
+		prev_quantized = quantized;
 	}
 
 	int byte_len = (bit_pos + 7) / 8;
